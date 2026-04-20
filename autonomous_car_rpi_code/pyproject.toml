@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocar"
+version = "0.1.0"
+description = "Raspberry Pi controller for a line-following autonomous car."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    # numpy pinned <2 so pip-installed numpy stays ABI-compatible with the
+    # apt-packaged picamera2 on Raspberry Pi OS (which is compiled against numpy 1.x).
+    # opencv-python >=4.13 requires numpy>=2, so we stay on the 4.10.x line which
+    # still supports numpy 1.x.
+    "numpy<2",
+    "opencv-python<4.11",
+    "pyserial",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+pi = ["picamera2"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+autocar = "autocar.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

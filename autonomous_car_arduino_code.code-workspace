@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "autonomous_car_arduino_code"
+		},
+		{
+			"path": "autonomous_car_rpi_code"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}

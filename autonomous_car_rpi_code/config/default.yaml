@@ -1,0 +1,32 @@
+camera:
+  width: 640
+  height: 480
+  framerate: 30
+  stream_host: "0.0.0.0"
+  stream_port: 8000
+  stream_enabled: true
+  jpeg_quality: 80
+
+vision:
+  roi_top: 0.55        # fraction of frame height where ROI begins
+  roi_bottom: 0.95
+  binarize_threshold: 80
+  min_contour_area: 500
+
+control:
+  pid:
+    kp: 0.6
+    ki: 0.0
+    kd: 0.15
+  base_speed: 120      # PWM 0..255
+  max_speed: 200
+  loop_hz: 30
+
+comms:
+  uart_port: "/dev/serial0"
+  uart_baud: 115200
+  command_timeout_s: 0.2
+
+logging:
+  level: "INFO"
+  file: null           # set to a path to enable file logging
