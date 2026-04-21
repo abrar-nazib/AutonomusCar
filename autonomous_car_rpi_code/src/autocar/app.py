@@ -4,24 +4,26 @@ import signal
 import time
 from typing import Optional
 
-from .camera import FrameSource, MJPEGStreamer
+from .camera import AnnotatedFrameProvider, MJPEGStreamer, create_frame_source
 from .comms import UARTLink
 from .config import AppConfig
 from .control import PID, DifferentialMixer
 from .logging_setup import get_logger
-from .vision import TrackDetector
+from .vision import LaneDetector, overlay
 
 log = get_logger(__name__)
 
 
 class AutonomousCarApp:
-    """Wires capture → vision → control → comms in a single control loop."""
+    """Wires capture → vision → control → comms in a single control loop.
+    Publishes an annotated (HUD) frame to the MJPEG stream each iteration."""
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self.frames = FrameSource(config.camera)
-        self.streamer = MJPEGStreamer(self.frames, config.camera)
-        self.detector = TrackDetector(config.vision)
+        self.frames = create_frame_source(config.camera)
+        self.viz = AnnotatedFrameProvider(self.frames)
+        self.streamer = MJPEGStreamer(self.viz, config.camera)
+        self.detector = LaneDetector(config.vision)
         self.pid = PID.from_config(config.control.pid, output_limit=1.0)
         self.mixer = DifferentialMixer(
             base_speed=config.control.base_speed,
@@ -29,6 +31,7 @@ class AutonomousCarApp:
         )
         self.uart = UARTLink(config.comms)
         self._stop = False
+        self._fps_ema = 0.0
 
     def run(self) -> None:
         self._install_signal_handlers()
@@ -36,7 +39,11 @@ class AutonomousCarApp:
 
         self.frames.start()
         self.streamer.start()
-        self.uart.open()
+        # UARTLink runs its own background thread: opens/reopens the port as
+        # the Arduino comes and goes, auto-answers CFG? with the control
+        # config, and gates send_offset() on the link state. The main loop
+        # below only has to call send_offset() — no blocking handshake.
+        self.uart.open(ctrl=self.config.control)
         log.info("control loop starting at %d Hz", self.config.control.loop_hz)
 
         last_t: Optional[float] = None
@@ -52,13 +59,28 @@ class AutonomousCarApp:
                     continue
 
                 detection = self.detector.detect(frame)
-                if not detection.found:
-                    self.pid.reset()
-                    self.uart.send_stop()
+                target = self.config.control.target_lane
+                offset = detection.lane_center_offset(target) if detection.found else None
+
+                steering: Optional[float] = None
+                if offset is not None:
+                    # Keep the local PID running so the HUD reflects what the
+                    # Pi *would* command; actual motor control lives on the
+                    # Arduino, which runs its own PID on the offset we forward.
+                    steering = self.pid.update(offset, dt)
+                    self.uart.send_offset(offset)
                 else:
-                    steering = self.pid.update(detection.offset, dt)
-                    cmd = self.mixer.mix(throttle=1.0, steering=steering)
-                    self.uart.send(cmd)
+                    self.pid.reset()
+                    # Don't spam stop — the Arduino's PID falls back to 0
+                    # automatically when offsets go stale (500 ms).
+
+                self._update_fps(dt)
+                annotated = overlay.draw(
+                    frame, detection,
+                    steering=steering, fps=self._fps_ema, target_lane=target,
+                    perspective=getattr(self.detector, "_persp", None),
+                )
+                self.viz.set_annotated(annotated)
 
                 elapsed = time.monotonic() - loop_start
                 remaining = period - elapsed
@@ -66,6 +88,12 @@ class AutonomousCarApp:
                     time.sleep(remaining)
         finally:
             self._shutdown()
+
+    def _update_fps(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        inst = 1.0 / dt
+        self._fps_ema = inst if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 * inst
 
     def _install_signal_handlers(self) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):

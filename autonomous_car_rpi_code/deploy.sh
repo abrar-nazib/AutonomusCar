@@ -24,6 +24,7 @@ scp -r \
     config \
     src \
     tests \
+    systemd \
     "$REMOTE_HOST:$REMOTE_DIR/"
 
 echo ">> done."

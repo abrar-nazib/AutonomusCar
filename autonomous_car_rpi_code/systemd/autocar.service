@@ -1,0 +1,20 @@
+[Unit]
+Description=Autocar line-following control loop
+After=network.target
+
+[Service]
+Type=simple
+User=abir
+SupplementaryGroups=dialout video
+WorkingDirectory=/home/abir/autonomous_car_rpi_code
+ExecStart=/home/abir/autonomous_car_rpi_code/.venv/bin/python -m autocar
+Restart=on-failure
+RestartSec=3
+# Give the signal handler in app.py time to send a stop command over UART
+# and shut the camera and MJPEG server down cleanly on `systemctl stop`.
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

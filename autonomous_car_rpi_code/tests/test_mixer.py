@@ -10,7 +10,7 @@ def test_straight_ahead_both_sides_equal():
 def test_steer_right_reduces_right_side():
     mix = DifferentialMixer(base_speed=100, max_speed=200)
     cmd = mix.mix(throttle=1.0, steering=1.0)
-    assert cmd.right > cmd.left
+    assert cmd.left > cmd.right   # +steering = right turn → left wheel faster
 
 
 def test_output_clamped_to_max_speed():

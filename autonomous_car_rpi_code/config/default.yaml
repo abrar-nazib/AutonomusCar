@@ -1,4 +1,6 @@
 camera:
+  source: "picamera"        # "picamera" (picamera2/libcamera) | "webcam" (cv2 V4L2)
+  webcam_index: 0           # /dev/videoN for webcam source
   width: 640
   height: 480
   framerate: 30
@@ -6,24 +8,76 @@ camera:
   stream_port: 8000
   stream_enabled: true
   jpeg_quality: 80
+  rotate_180: true          # flip 180° if camera is mounted upside-down (hw for picamera, sw for webcam)
+  # Low-light tuning. `framerate` above caps exposure via FrameDurationLimits
+  # so auto-exposure can't drag the loop rate below 30 Hz.
+  exposure_value: 1.5       # EV bias [-8.0, 8.0]; tuned against an indoor dim scene
+  analogue_gain: null       # null = auto; set 1.0..16.0 to force sensor gain
+  brightness: 0.15          # [-1.0, 1.0], post-ISP
+  contrast: 1.4             # 1.0 = default; >1 boosts track-vs-edge separation
+  saturation: 1.0           # 1.0 = default
 
 vision:
-  roi_top: 0.55        # fraction of frame height where ROI begins
-  roi_bottom: 0.95
-  binarize_threshold: 80
-  min_contour_area: 500
+  # Bird's-eye-view lane detector (Udacity-style: perspective warp → adaptive
+  # threshold → sliding-window → quadratic polyfit per lane).
+
+  # --- Source trapezoid (road surface in the image) ---
+  # Calibrated for the raised-camera view. Four corner x-fractions give an
+  # asymmetric trapezoid that hugs the actual (curving, offset) track.
+  persp_top_y_frac: 0.18
+  persp_bottom_y_frac: 0.88
+  persp_top_left_frac: 0.15       # top-left corner x (covers the far left tape near horizon)
+  persp_top_right_frac: 0.72      # top-right corner x
+  persp_bottom_left_frac: -0.05   # negative allowed — left tape curves past the frame edge at the bottom
+  persp_bottom_right_frac: 1.00
+  persp_dst_margin_frac: 0.10     # side margin in the bird's-eye canvas (room for curvature)
+
+  # --- Car trajectory reference (NOT frame geometric center) ---
+  car_center_x_frac: 0.55      # shifted ~32 px right to align with the chassis centerline
+
+  # --- Adaptive threshold in bird's-eye ---
+  adaptive_block_size: 31      # odd; local-mean neighborhood
+  adaptive_c: 35               # larger = stricter; tape must beat local mean by >= this
+  dilate_kernel: 3             # reconnect fragmented tape strokes
+
+  # --- Sheet mask (kills off-track noise before tape detection) ---
+  sheet_threshold: 85           # gray > this (after CLAHE) = track sheet
+  sheet_close_kernel: 25        # close pinholes/dashes so the sheet is one blob
+  sheet_erode_kernel: 9         # shrink the sheet so its own edge doesn't read as tape
+  # CLAHE normalises local brightness so shadow/lit halves of the sheet behave
+  # consistently. Without this, lighting changes kill the sheet mask.
+  clahe_enabled: true
+  clahe_clip: 2.5
+  clahe_tile: 8
+  # --- Connected-component clustering (bird's-eye) ---
+  # Every dark component is one "piece". Pieces whose x-centroids are within
+  # cluster_gap_px_bird merge into one lane — dashed divider collapses into a
+  # single cluster, solid tape forms its own.
+  open_kernel: 3                # morphological open to drop speckle
+  piece_min_area: 20            # drop components smaller than this (px)
+  cluster_gap_px_bird: 12       # pieces within this x-gap belong to the same lane
+  min_lane_height_frac_bird: 0.30  # cluster's y-span must exceed this of bird height
+  min_lane_points: 120          # min raw-tape pixels required per lane
+  near_car_fit_frac: 0.60       # fit only the bottom N fraction of each lane (robust at sharp curves)
+  lane_half_width_bird: 100.0   # assumed half-lane-width (bird's-eye px); used by single-lane offset fallback
+  fit_degree: 2                 # quadratic polyfit
 
 control:
   pid:
-    kp: 0.6
+    kp: 2.8
     ki: 0.0
     kd: 0.15
-  base_speed: 120      # PWM 0..255
-  max_speed: 200
+  base_speed: 120      # PWM 0..255 (unused by the new Arduino drive protocol)
+  max_speed: 200       # unused by the new protocol
   loop_hz: 30
+  target_lane: "L"     # 'L' (between left edge & divider) or 'R' (between divider & right edge)
+  # PWM clamp forwarded to the Arduino during the CFG handshake. 10..50 is the
+  # very-slow steering test range. Arduino halts after 30 s regardless.
+  arduino_pwm_min: 10
+  arduino_pwm_max: 70
 
 comms:
-  uart_port: "/dev/serial0"
+  uart_port: "/dev/ttyACM0"    # Arduino-over-USB. Use "/dev/serial0" when wired to the GPIO UART.
   uart_baud: 115200
   command_timeout_s: 0.2
 
