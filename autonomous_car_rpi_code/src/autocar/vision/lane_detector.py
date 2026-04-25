@@ -60,11 +60,11 @@ class LaneDetection:
 
     def lane_center_offset(self, target_lane: str) -> Optional[float]:
         """Normalized [-1, 1] offset of the target lane's midline from the
-        car's calibrated trajectory column, sampled at the deepest y where
-        the required fits have data. Falls back gracefully:
+        car's trajectory column, sampled at a *look-ahead* point along the
+        fit (not at the car). Falls back gracefully:
           - (L, R) pair if the divider is missing
           - single-lane mode if only one edge is visible (uses an assumed
-            lane half-width in bird's-eye)
+            lane half-width along the lane normal)
         Positive = lane midline is to the right of the car.
         """
         bw, bh = self.bird_size
@@ -75,15 +75,31 @@ class LaneDetection:
         C = (self.center_fit_bird, self.center_y_range_bird)
         R = (self.right_fit_bird, self.right_y_range_bird)
 
+        # Look-ahead sampling: 0 = at car (max y in bird's-eye), 1 = far end
+        # of the fit. At the car, a curving lane has barely begun to bend, so
+        # the offset reads "lane is right here" — the controller doesn't
+        # commit to the upcoming curve. Sampling further up means the offset
+        # already reflects where the lane is going.
+        look = float(getattr(self, "_look_ahead_frac", 0.6))
+
+        def y_eval_pair(yr_a, yr_b):
+            y_hi = min(yr_a[1], yr_b[1])
+            y_lo = max(yr_a[0], yr_b[0])
+            if y_hi <= y_lo:
+                return None
+            return float(y_hi - look * (y_hi - y_lo))
+
+        def y_eval_one(yr):
+            return float(yr[1] - look * (yr[1] - yr[0]))
+
         def mid_from_pair(pa, pb):
             if pa[0] is None or pb[0] is None:
                 return None
-            y_hi = min(pa[1][1], pb[1][1])
-            y_lo = max(pa[1][0], pb[1][0])
-            if y_hi <= y_lo:
+            ye = y_eval_pair(pa[1], pb[1])
+            if ye is None:
                 return None
-            a = float(np.polyval(pa[0], y_hi))
-            b = float(np.polyval(pb[0], y_hi))
+            a = float(np.polyval(pa[0], ye))
+            b = float(np.polyval(pb[0], ye))
             return 0.5 * (a + b)
 
         mid: Optional[float] = None
@@ -94,10 +110,12 @@ class LaneDetection:
         else:
             mid = mid_from_pair(L, R)
 
-        # Single-lane fallback: if only one edge is visible (typical at sharp
-        # curves), steer toward (that edge ± half_lane_width_bird). Sign
-        # flips per lane: for Lane L the midline is to the RIGHT of the left
-        # edge and to the LEFT of the divider / right edge.
+        # Single-lane fallback: only one edge visible (typical at sharp
+        # curves). Step `qw` along the lane *normal* — perpendicular to the
+        # tangent of x = f(y) at y_eval — not horizontally. The horizontal
+        # component of that step is qw / sqrt(1 + f'(y)²); using qw raw
+        # over-shoots on steep curves. Sign per lane: for Lane L the midline
+        # is to the RIGHT of the left edge and to the LEFT of divider / right.
         if mid is None:
             qw = self._lane_half_width_bird()
             for pol, y_range, sign_for_L, sign_for_R in [
@@ -107,10 +125,12 @@ class LaneDetection:
             ]:
                 if pol is None:
                     continue
-                y_eval = y_range[1]
-                edge_x = float(np.polyval(pol, y_eval))
+                ye = y_eval_one(y_range)
+                edge_x = float(np.polyval(pol, ye))
+                slope = float(np.polyval(np.polyder(pol), ye))
+                step_x = qw / float(np.sqrt(1.0 + slope * slope))
                 sign = sign_for_L if lane == "L" else sign_for_R
-                mid = edge_x + sign * qw
+                mid = edge_x + sign * step_x
                 break
 
         if mid is None:
@@ -366,8 +386,9 @@ class LaneDetector:
             left_fit_bird=left_fit, center_fit_bird=center_fit, right_fit_bird=right_fit,
             left_y_range_bird=left_y, center_y_range_bird=center_y, right_y_range_bird=right_y,
         )
-        # Stash for the single-lane fallback in LaneDetection.lane_center_offset.
+        # Stash for the offset sampling in LaneDetection.lane_center_offset.
         det_out._lane_half_width_bird_px = lane_half_px
+        det_out._look_ahead_frac = float(self.cfg.look_ahead_frac)
         return det_out
 
     # ------------------------------------------------------------------ helpers

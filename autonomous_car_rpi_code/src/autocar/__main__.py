@@ -17,7 +17,7 @@ def main() -> None:
 
     config = AppConfig.from_yaml(args.config)
     configure_logging(config.logging)
-    AutonomousCarApp(config).run()
+    AutonomousCarApp(config, config_path=args.config).run()
 
 
 if __name__ == "__main__":

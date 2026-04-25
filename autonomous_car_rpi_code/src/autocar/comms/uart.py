@@ -14,8 +14,10 @@ State transitions driven by Arduino chatter:
     CFG?            → send C line,  state = NEED_CFG
     CFG_OK          →               state = RUNNING
     CFG_ERR <why>   →               state = HALTED
-    EXPIRED|HALTED  →               state = HALTED
-    READY|RUNNING   →               (informational; no change)
+    PAUSED          →               state = PAUSED
+    RUNNING         →               state = RUNNING (boot or after G)
+    EXPIRED|HALTED  →               state = HALTED  (legacy firmware only)
+    READY           →               (informational)
 
 `send_offset()` is a no-op unless state is RUNNING, so the main loop can
 call it on every tick without knowing anything about the handshake."""
@@ -42,8 +44,9 @@ def encode_command(cmd: MotorCommand) -> bytes:
 
 STATE_UNKNOWN  = "UNKNOWN"       # port not open yet, or Arduino silent
 STATE_NEED_CFG = "NEED_CFG"      # sent config, waiting for CFG_OK
-STATE_RUNNING  = "RUNNING"       # Arduino inside its 30-s drive window
-STATE_HALTED   = "HALTED"        # Arduino sent EXPIRED / HALTED / CFG_ERR
+STATE_RUNNING  = "RUNNING"       # Arduino is armed and accepting E commands
+STATE_PAUSED   = "PAUSED"        # Arduino received S; ignoring E until G
+STATE_HALTED   = "HALTED"        # Arduino sent CFG_ERR or legacy HALTED
 
 
 class UARTLink:
@@ -101,8 +104,13 @@ class UARTLink:
         self._write(f"E {offset:.4f}\n".encode("ascii"), "offset")
 
     def send_stop(self) -> None:
-        """Emergency stop. Safe to call regardless of state."""
+        """Emergency stop (resumable). Safe to call regardless of state."""
         self._write(b"S\n", "stop")
+
+    def send_resume(self) -> None:
+        """Bring the Arduino out of its PAUSED state. Safe to call always —
+        firmware ignores G when not paused."""
+        self._write(b"G\n", "resume")
 
     def send(self, cmd: MotorCommand) -> None:
         """Legacy raw-PWM command (no state gating, for the old protocol)."""
@@ -202,9 +210,15 @@ class UARTLink:
         elif line.startswith("CFG_ERR"):
             log.error("arduino rejected config: %s", line)
             self._state = STATE_HALTED
+        elif line == "PAUSED":
+            self._state = STATE_PAUSED
+        elif line == "RUNNING":
+            # Sent on boot (after CFG_OK) and again after every G (resume).
+            self._state = STATE_RUNNING
         elif line in ("EXPIRED", "HALTED"):
+            # Legacy firmware that halts forever — pre-pauseDrive build.
             self._state = STATE_HALTED
-        # READY and RUNNING are informational.
+        # READY is informational.
 
         if self._state != prev:
             log.info("uart link state %s → %s", prev, self._state)

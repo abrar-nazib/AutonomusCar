@@ -41,6 +41,10 @@ def draw(
     fps: Optional[float] = None,
     target_lane: str = "R",
     perspective=None,
+    lidar_scan: Optional[np.ndarray] = None,
+    lidar_max_range_mm: float = 6000.0,
+    lidar_inset_size_px: int = 220,
+    lidar_inset_margin_px: int = 12,
 ) -> np.ndarray:
     out = frame.copy()
     if perspective is not None:
@@ -56,6 +60,13 @@ def draw(
     _draw_trajectory_marker(out, det)
     _draw_hud_panel(out, det, steering=steering, fps=fps, target_lane=target_lane)
     _draw_heading(out, steering, det.car_center_x)
+    if lidar_scan is not None and len(lidar_scan) > 0:
+        _draw_lidar_inset(
+            out, lidar_scan,
+            max_range_mm=lidar_max_range_mm,
+            size_px=lidar_inset_size_px,
+            margin_px=lidar_inset_margin_px,
+        )
     return out
 
 
@@ -241,6 +252,84 @@ def _feature_dot(out: np.ndarray, pos: tuple, label: str, color: tuple, on: bool
 
 
 # --- heading arrow --------------------------------------------------------
+
+# --- LIDAR radar inset -----------------------------------------------------
+
+LIDAR_BG_COLOR    = (15, 15, 15)
+LIDAR_BORDER      = (90, 200, 255)
+LIDAR_RING        = (50, 80, 90)
+LIDAR_FORWARD     = (60, 180, 255)
+LIDAR_POINT_NEAR  = (80, 255, 180)
+LIDAR_POINT_FAR   = (180, 130, 80)
+
+
+def _draw_lidar_inset(
+    out: np.ndarray,
+    scan: np.ndarray,           # Nx2 (angle_deg, distance_mm)
+    max_range_mm: float,
+    size_px: int,
+    margin_px: int,
+) -> None:
+    """Top-down 2-D radar of the latest lidar revolution. Cheap: cached
+    background blit + vectorized point projection (numpy), bottom-right."""
+    h, w = out.shape[:2]
+    diam = int(size_px)
+    r = diam // 2
+    cx = w - margin_px - r
+    cy = h - margin_px - r
+
+    # Translucent background panel.
+    x0, y0 = cx - r - 4, cy - r - 4
+    x1, y1 = cx + r + 4, cy + r + 4
+    if x0 < 0 or y0 < 0 or x1 >= w or y1 >= h:
+        return
+    roi = out[y0:y1, x0:x1]
+    blk = np.zeros_like(roi)
+    cv2.addWeighted(blk, 0.55, roi, 0.45, 0, roi)
+
+    # Range rings (1/3, 2/3, full).
+    for k in (1, 2, 3):
+        cv2.circle(out, (cx, cy), int(r * k / 3), LIDAR_RING, 1, cv2.LINE_AA)
+    # Crosshair + forward axis (lidar 0° = forward by default; user's mount
+    # may differ — this is just a reference axis).
+    cv2.line(out, (cx, cy - r), (cx, cy + r), LIDAR_RING, 1, cv2.LINE_AA)
+    cv2.line(out, (cx - r, cy), (cx + r, cy), LIDAR_RING, 1, cv2.LINE_AA)
+    cv2.line(out, (cx, cy), (cx, cy - r + 4), LIDAR_FORWARD, 2, cv2.LINE_AA)
+
+    # Vectorized projection: angle_deg → image coords. Lidar 0° points up,
+    # angle increases clockwise (top-down view). dx = sin(a), dy = -cos(a).
+    angles = np.deg2rad(scan[:, 0].astype(np.float32))
+    dists  = scan[:, 1].astype(np.float32)
+    mask   = (dists > 0) & (dists <= float(max_range_mm))
+    if not np.any(mask):
+        cv2.circle(out, (cx, cy), r, LIDAR_BORDER, 1, cv2.LINE_AA)
+        return
+    angles = angles[mask]
+    dists  = dists[mask]
+    norm   = dists / float(max_range_mm)
+    xs = (cx + norm * r * np.sin(angles)).astype(np.int32)
+    ys = (cy - norm * r * np.cos(angles)).astype(np.int32)
+
+    # Color by range (near=greenish, far=blueish). Single 2-color ramp.
+    blend = norm[:, None]                      # (N,1)
+    near = np.array(LIDAR_POINT_NEAR, dtype=np.float32)
+    far  = np.array(LIDAR_POINT_FAR,  dtype=np.float32)
+    cols = (1.0 - blend) * near + blend * far
+    cols = cols.astype(np.uint8)
+
+    # Direct pixel write — clip to inset bounding box first.
+    in_box = (xs >= x0) & (xs < x1) & (ys >= y0) & (ys < y1)
+    xs = xs[in_box]; ys = ys[in_box]; cols = cols[in_box]
+    out[ys, xs] = cols
+    # 1-px halo so points read clearly against the dark panel.
+    out[np.clip(ys + 1, 0, h - 1), xs] = cols
+    out[ys, np.clip(xs + 1, 0, w - 1)] = cols
+
+    # Border + count label.
+    cv2.circle(out, (cx, cy), r, LIDAR_BORDER, 1, cv2.LINE_AA)
+    cv2.putText(out, f"LIDAR {len(scan)}", (x0 + 6, y0 + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, LIDAR_BORDER, 1, cv2.LINE_AA)
+
 
 def _draw_heading(out: np.ndarray, steering: Optional[float], car_center_x: int) -> None:
     h, w = out.shape[:2]

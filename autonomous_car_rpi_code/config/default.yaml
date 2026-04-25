@@ -60,6 +60,7 @@ vision:
   min_lane_points: 120          # min raw-tape pixels required per lane
   near_car_fit_frac: 0.60       # fit only the bottom N fraction of each lane (robust at sharp curves)
   lane_half_width_bird: 100.0   # assumed half-lane-width (bird's-eye px); used by single-lane offset fallback
+  look_ahead_frac: 0.6          # offset sample point along the fit: 0 = at the car, 1 = far end. Higher = anticipate curves earlier.
   fit_degree: 2                 # quadratic polyfit
 
 control:
@@ -80,6 +81,16 @@ comms:
   uart_port: "/dev/ttyACM0"    # Arduino-over-USB. Use "/dev/serial0" when wired to the GPIO UART.
   uart_baud: 115200
   command_timeout_s: 0.2
+
+lidar:
+  enabled: true
+  port: "/dev/ttyUSB0"         # Slamtec adapter via CP210x
+  baud: 256000                 # this lidar; A2 standard is 115200
+  pwm: 1023                    # SetMotorPWM; this unit needs max
+  max_range_mm: 6000.0         # clip points beyond this in the radar inset
+  overlay_enabled: true
+  overlay_size_px: 220         # diameter of the on-screen radar (px)
+  overlay_margin_px: 12        # gap from the frame edge
 
 logging:
   level: "INFO"

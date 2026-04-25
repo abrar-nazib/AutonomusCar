@@ -71,6 +71,7 @@ class VisionConfig:
     min_lane_points: int = 120               # original-tape pixels required per lane
     near_car_fit_frac: float = 0.60          # fit the polynomial on the bottom N%% of each lane's pixels — avoids multi-valued fits when the far-ahead tape curves hard
     lane_half_width_bird: float = 100.0      # assumed half-lane width (bird's-eye px) — used by the single-lane offset fallback at sharp curves
+    look_ahead_frac: float = 0.6             # 0 = sample offset at car (max y), 1 = at far end of fit. Higher = react to upcoming curve sooner.
     peak_edge_mask_frac: float = 0.05        # retained for back-compat (unused by CC path)
     # --- Sliding-window knobs (retained for back-compat; unused by CC path) ---
     nwindows: int = 12
@@ -130,6 +131,18 @@ class CommsConfig:
 
 
 @dataclass
+class LidarConfig:
+    enabled: bool = True
+    port: str = "/dev/ttyUSB0"
+    baud: int = 256000               # this unit; A2 standard is 115200
+    pwm: int = 1023                  # this unit will not start below ~1000
+    max_range_mm: float = 6000.0     # range clip for the on-screen radar
+    overlay_enabled: bool = True
+    overlay_size_px: int = 220       # diameter of the radar inset
+    overlay_margin_px: int = 12
+
+
+@dataclass
 class LoggingConfig:
     level: str = "INFO"
     file: Optional[str] = None
@@ -141,6 +154,7 @@ class AppConfig:
     vision: VisionConfig = field(default_factory=VisionConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     comms: CommsConfig = field(default_factory=CommsConfig)
+    lidar: LidarConfig = field(default_factory=LidarConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -155,6 +169,7 @@ class AppConfig:
                 **{k: v for k, v in data.get("control", {}).items() if k != "pid"},
             ),
             comms=CommsConfig(**data.get("comms", {})),
+            lidar=LidarConfig(**data.get("lidar", {})),
             logging=LoggingConfig(**data.get("logging", {})),
         )
 

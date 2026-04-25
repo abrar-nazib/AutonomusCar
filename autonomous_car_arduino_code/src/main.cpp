@@ -18,23 +18,24 @@
 //     Arduino replies:  CFG_OK          (accepted, motors armed)
 //                       CFG_ERR <reason>  (stayed in CFG request loop)
 //
-//   Once running, the host feeds per-loop lane-center errors and, when
-//   it's time to stop, an explicit S:
+//   Once running, the host feeds per-loop lane-center errors and can
+//   pause/resume drive at any time:
 //     host → Arduino:   E <offset>\n    (offset in [-1.0, 1.0])
-//     host → Arduino:   S\n             (stop; motors off until reset)
+//     host → Arduino:   S\n             (pause; motors off, drivers disabled)
+//     host → Arduino:   G\n             (resume; drivers re-armed, PID reset)
 //
-//   There is NO internal time limit — the Pi owns the stop decision.
+//   There is NO internal time limit — the Pi owns the pause/resume cadence.
 //   Safety still lives at two layers:
 //     * if no E arrives inside OFFSET_STALE_MS the PID falls back to
 //       offset 0 (go straight), rather than reusing a stale command;
-//     * on S, the drivers are hardware-disabled and the main loop
-//       discards any further input until the board is reset.
+//     * on S, the drivers are hardware-disabled, the PID state is wiped,
+//       and the main loop ignores further E commands until G arrives.
 //
 //   Async chatter (Arduino → host):
 //     READY    on boot (right after Serial is up)
 //     CFG?     requesting configuration
-//     RUNNING  motors armed, waiting for E commands
-//     HALTED   S received; stopped for good
+//     RUNNING  motors armed, waiting for E commands (boot or after G)
+//     PAUSED   S received; ignoring E until G
 // =====================================================================
 
 #define MODE_ECHO  0
@@ -122,13 +123,15 @@ unsigned long offset_t = 0;
 unsigned long last_pid_t  = 0;
 float pid_integral   = 0.0f;
 float pid_prev_error = 0.0f;
+bool  paused          = false;
 
 String rxBuffer;
 
 bool parseConfigLine(const String &line);
 void processRunLine(const String &line);
 void driveFromSteering(float steering);
-void haltForever(const char *reason);
+void pauseDrive();
+void resumeDrive();
 
 void setup() {
   pinMode(RPWM_L, OUTPUT); pinMode(LPWM_L, OUTPUT);
@@ -189,13 +192,9 @@ void loop() {
 
   const unsigned long now = millis();
 
-  // Hard safety cap: after 30 s, halt for good.
-  if (now - run_start_t >= RUN_DURATION_MS) {
-    haltForever("EXPIRED");
-  }
-
-  // PID tick at 50 Hz.
-  if (now - last_pid_t >= PID_PERIOD_MS) {
+  // PID tick at 50 Hz. Skipped while paused — motors stay off and the
+  // PID state is reset in pauseDrive(), so resume starts from a clean slate.
+  if (!paused && (now - last_pid_t >= PID_PERIOD_MS)) {
     const float dt = (now - last_pid_t) * 0.001f;
     last_pid_t = now;
 
@@ -252,12 +251,15 @@ void processRunLine(const String &line) {
   if (line.length() == 0) return;
   const char cmd = line.charAt(0);
   if (cmd == 'E') {
+    if (paused) return;   // ignore offsets while paused — Pi may keep streaming
     String rest = line.substring(1);
     rest.trim();
     latest_offset = rest.toFloat();
     offset_t = millis();
   } else if (cmd == 'S') {
-    haltForever("HALTED");
+    pauseDrive();
+  } else if (cmd == 'G') {
+    resumeDrive();
   }
   // Unknown command lines are silently ignored.
 }
@@ -310,14 +312,26 @@ void driveFromSteering(float steering) {
   driveSideSigned(false, right);
 }
 
-void haltForever(const char *reason) {
+void pauseDrive() {
   stopMotors();
   enableDrivers(false);
-  Serial.println(reason);
-  for (;;) {
-    while (Serial.available() > 0) Serial.read();
-    delay(100);
-  }
+  pid_integral   = 0.0f;
+  pid_prev_error = 0.0f;
+  latest_offset  = 0.0f;
+  offset_t       = 0;
+  paused         = true;
+  Serial.println("PAUSED");
+}
+
+void resumeDrive() {
+  enableDrivers(true);
+  pid_integral   = 0.0f;
+  pid_prev_error = 0.0f;
+  latest_offset  = 0.0f;
+  offset_t       = 0;
+  last_pid_t     = millis();
+  paused         = false;
+  Serial.println("RUNNING");
 }
 
 #endif  // MODE selection
